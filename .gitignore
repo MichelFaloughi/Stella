@@ -1,0 +1,4 @@
+# can't let the huzz know about my secrets
+.env
+credentials.json
+token.json
