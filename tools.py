@@ -132,25 +132,342 @@ def create_event(
 
 
 
+from datetime import datetime, date, time, timedelta
+from zoneinfo import ZoneInfo
 
+@tool(
+    "list_events_for_day",
+    description="List events for a given day. date_str must be 'YYYY-MM-DD'. Returns events with ids."
+)
+def list_events_for_day(
+    date_str: str,
+    calendar_id: str = "primary",
+    timezone: str = DEFAULT_TZ,
+    max_results: int = 50,
+) -> Dict[str, Any]:
+    service = get_service()
+
+    tz = ZoneInfo(timezone)
+    d = date.fromisoformat(date_str)
+
+    start_dt = datetime.combine(d, time.min).replace(tzinfo=tz)
+    end_dt = (start_dt + timedelta(days=1))
+
+    events_result = (
+        service.events()
+        .list(
+            calendarId=calendar_id,
+            timeMin=start_dt.isoformat(),
+            timeMax=end_dt.isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=max_results,
+        )
+        .execute()
+    )
+
+    items = events_result.get("items", [])
+
+    def _extract(ev):
+        return {
+            "event_id": ev.get("id"),
+            "summary": ev.get("summary"),
+            "start": ev.get("start"),
+            "end": ev.get("end"),
+            "htmlLink": ev.get("htmlLink"),
+            "location": ev.get("location"),
+        }
+
+    return {
+        "date": date_str,
+        "timezone": timezone,
+        "count": len(items),
+        "events": [_extract(ev) for ev in items],
+    }
+
+
+@tool(
+    "list_events_between",
+    description="List calendar events between two dates (inclusive). Dates are YYYY-MM-DD."
+)
+def list_events_between(
+    start_date: str,
+    end_date: str,
+    calendar_id: str = "primary",
+    timezone: str = DEFAULT_TZ,
+    max_results: int = 50,
+) -> Dict[str, Any]:
+    service = get_service()
+    tz = ZoneInfo(timezone)
+
+    start_dt = datetime.combine(
+        date.fromisoformat(start_date),
+        time.min
+    ).replace(tzinfo=tz)
+
+    # end_date inclusive → add 1 day
+    end_dt = datetime.combine(
+        date.fromisoformat(end_date),
+        time.min
+    ).replace(tzinfo=tz) + timedelta(days=1)
+
+    events_result = (
+        service.events()
+        .list(
+            calendarId=calendar_id,
+            timeMin=start_dt.isoformat(),
+            timeMax=end_dt.isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=max_results,
+        )
+        .execute()
+    )
+
+    items = events_result.get("items", [])
+
+    return {
+        "range": {
+            "start_date": start_date,
+            "end_date": end_date,
+            "timezone": timezone,
+        },
+        "count": len(items),
+        "events": [
+            {
+                "event_id": ev.get("id"),
+                "summary": ev.get("summary"),
+                "start": ev.get("start"),
+                "end": ev.get("end"),
+                "location": ev.get("location"),
+                "htmlLink": ev.get("htmlLink"),
+            }
+            for ev in items
+        ],
+    }
+
+
+from datetime import datetime, date, time, timedelta
+from zoneinfo import ZoneInfo
+from typing import Optional, Dict, Any, List
+
+@tool(
+    "find_events",
+    description=(
+        "Find events by free-text query within a date range (inclusive). "
+        "Dates are YYYY-MM-DD. Returns events with ids."
+    ),
+)
+def find_events(
+    query: str,
+    start_date: str,
+    end_date: str,
+    calendar_id: str = "primary",
+    timezone: str = DEFAULT_TZ,
+    max_results: int = 25,
+) -> Dict[str, Any]:
+    service = get_service()
+    tz = ZoneInfo(timezone)
+
+    start_dt = datetime.combine(date.fromisoformat(start_date), time.min).replace(tzinfo=tz)
+    end_dt = datetime.combine(date.fromisoformat(end_date), time.min).replace(tzinfo=tz) + timedelta(days=1)
+
+    events_result = (
+        service.events()
+        .list(
+            calendarId=calendar_id,
+            q=query,
+            timeMin=start_dt.isoformat(),
+            timeMax=end_dt.isoformat(),
+            singleEvents=True,     # expands recurring events into instances
+            orderBy="startTime",
+            maxResults=max_results,
+        )
+        .execute()
+    )
+
+    items = events_result.get("items", [])
+
+    return {
+        "query": query,
+        "range": {"start_date": start_date, "end_date": end_date, "timezone": timezone},
+        "count": len(items),
+        "events": [
+            {
+                "event_id": ev.get("id"),
+                "summary": ev.get("summary"),
+                "start": ev.get("start"),
+                "end": ev.get("end"),
+                "location": ev.get("location"),
+                "htmlLink": ev.get("htmlLink"),
+            }
+            for ev in items
+        ],
+    }
+
+
+@tool(
+    "delete_event",
+    description=(
+        "Delete a calendar event. Prefer event_id. "
+        "If only a query is provided, it will search in the date range and delete ONLY if exactly one match is found."
+    ),
+)
+def delete_event(
+    event_id: Optional[str] = None,
+    query: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    calendar_id: str = "primary",
+    timezone: str = DEFAULT_TZ,
+) -> Dict[str, Any]:
+    service = get_service()
+
+    # If event_id provided, delete directly
+    if event_id:
+        service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+        return {"deleted": True, "event_id": event_id, "calendar_id": calendar_id}
+
+    # Otherwise resolve by search (must have query + window)
+    if not query or not start_date or not end_date:
+        return {
+            "deleted": False,
+            "error": "Must provide event_id, or (query + start_date + end_date)."
+        }
+
+    # Reuse find_events logic inline (or call a shared helper)
+    tz = ZoneInfo(timezone)
+    start_dt = datetime.combine(date.fromisoformat(start_date), time.min).replace(tzinfo=tz)
+    end_dt = datetime.combine(date.fromisoformat(end_date), time.min).replace(tzinfo=tz) + timedelta(days=1)
+
+    events_result = service.events().list(
+        calendarId=calendar_id,
+        q=query,
+        timeMin=start_dt.isoformat(),
+        timeMax=end_dt.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+        maxResults=10,
+    ).execute()
+
+    items = events_result.get("items", [])
+    if len(items) == 0:
+        return {"deleted": False, "error": "No matching events found."}
+    if len(items) > 1:
+        return {
+            "deleted": False,
+            "error": "Ambiguous query: multiple matches.",
+            "matches": [
+                {"event_id": ev.get("id"), "summary": ev.get("summary"), "start": ev.get("start"), "htmlLink": ev.get("htmlLink")}
+                for ev in items
+            ],
+        }
+
+    eid = items[0].get("id")
+    service.events().delete(calendarId=calendar_id, eventId=eid).execute()
+    return {"deleted": True, "event_id": eid, "calendar_id": calendar_id}
+
+
+from typing import Optional, Dict, Any, List
+from datetime import datetime, date, time, timedelta
+from zoneinfo import ZoneInfo
+
+@tool(
+    "update_event",
+    description=(
+        "Patch-update a calendar event. Prefer event_id. "
+        "If event_id is not provided, provide (query + start_date + end_date) to resolve a single event. "
+        "patch is a partial Google Calendar event resource (e.g. {'summary': 'New title'} or {'start': {...}, 'end': {...}})."
+    ),
+)
+def update_event(
+    patch: Dict[str, Any],
+    event_id: Optional[str] = None,
+    query: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    calendar_id: str = "primary",
+    timezone: str = DEFAULT_TZ,
+) -> Dict[str, Any]:
+    service = get_service()
+
+    def _resolve_single_event_id() -> Dict[str, Any]:
+        """Return {'ok': True, 'event_id': ...} or {'ok': False, 'error': ..., 'matches': [...]?}"""
+        if event_id:
+            return {"ok": True, "event_id": event_id}
+
+        if not query or not start_date or not end_date:
+            return {
+                "ok": False,
+                "error": "Must provide event_id, or (query + start_date + end_date).",
+            }
+
+        tz = ZoneInfo(timezone)
+        start_dt = datetime.combine(date.fromisoformat(start_date), time.min).replace(tzinfo=tz)
+        end_dt = datetime.combine(date.fromisoformat(end_date), time.min).replace(tzinfo=tz) + timedelta(days=1)
+
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            q=query,
+            timeMin=start_dt.isoformat(),
+            timeMax=end_dt.isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=10,
+        ).execute()
+
+        items = events_result.get("items", [])
+        if len(items) == 0:
+            return {"ok": False, "error": "No matching events found."}
+        if len(items) > 1:
+            return {
+                "ok": False,
+                "error": "Ambiguous query: multiple matches.",
+                "matches": [
+                    {
+                        "event_id": ev.get("id"),
+                        "summary": ev.get("summary"),
+                        "start": ev.get("start"),
+                        "htmlLink": ev.get("htmlLink"),
+                    }
+                    for ev in items
+                ],
+            }
+
+        return {"ok": True, "event_id": items[0].get("id")}
+
+    # --- resolve target event id ---
+    resolved = _resolve_single_event_id()
+    if not resolved.get("ok"):
+        return {"updated": False, **resolved}
+
+    target_id = resolved["event_id"]
+
+    # --- apply PATCH ---
+    updated = service.events().patch(
+        calendarId=calendar_id,
+        eventId=target_id,
+        body=patch,
+    ).execute()
+
+    return {
+        "updated": True,
+        "event_id": updated.get("id"),
+        "summary": updated.get("summary"),
+        "start": updated.get("start"),
+        "end": updated.get("end"),
+        "location": updated.get("location"),
+        "htmlLink": updated.get("htmlLink"),
+    }
 
 
 # ===================== TODO =====================
-# [ ] Add list_events_for_day(date, timezone) tool (needed to resolve event_id)
-# [ ] Add find_events(query, start_date, end_date) tool
-# [ ] Add update_event(event_id, patch) tool (use PATCH, not full update)
-# [ ] Add delete_event(event_id) tool
+# [ ] Add list_events_for_day(date, timezone) tool (needed to resolve event_id) - DONE
+# [ ] Add find_events(query, start_date, end_date) tool                         - DONE
+# [ ] Add update_event(event_id, patch) tool (use PATCH, not full update)       - DONE 
+# [ ] Add delete_event(event_id) tool                                           - DONE (added non-id arg)
 # [ ] Handle ambiguous matches (ask user to choose when multiple events found)
 # [ ] Add safety guardrails (past events, recurring events confirmation)
 # [ ] Normalize date/time parsing (timezone + ISO consistency)
 # [ ] Improve system prompt to forbid hallucinated success
 # ===============================================
-
-@tool("delete_event", description="")
-def delete_event(args):
-    pass
-
-
-@tool("update_event", description="")
-def update_event(args):
-    pass
