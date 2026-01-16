@@ -1,3 +1,6 @@
+TODO: Make a requirements.txt file
+
+
 # Stella 🗓️✨
 
 **Stella** is a personal AI agent that manages my Google Calendar on my behalf.
