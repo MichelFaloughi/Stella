@@ -1,43 +1,50 @@
 from agent import agent
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+def current_datetime_str():
+    return datetime.now(ZoneInfo("America/New_York")).strftime(
+        "%A, %Y-%m-%d %H:%M (%Z)"
+    )
+
+
+SYSTEM_HINT = (
+    "You are Stella, a terminal calendar assistant. "
+    "Be brief. Ask one clarifying question if required fields are missing. "
+    "Never invent event titles unless the user explicitly says to block time."
+    f"Current datetime: {current_datetime_str()}"
+)
+
+def main():
+    messages = [{"role": "system", "content": SYSTEM_HINT}]
+
+    print("Stella (Calendar) — type a request, or 'help', or 'exit'.")
+    print("Examples: 'Create an event tomorrow 3-4pm called Gym' | 'List events next week'")
+
+    while True:
+        try:
+            user = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nbye")
+            break
+
+        if not user:
+            continue
+        if user.lower() in {"exit", "quit", "q"}:
+            print("bye")
+            break
+        if user.lower() == "help":
+            print("Try: create / rename / delete / list. Include dates/times/timezone when possible.")
+            continue
+
+        messages.append({"role": "user", "content": user})
+
+        res = agent.invoke({"messages": messages})
+        reply = res["messages"][-1].content
+        print(reply)
+
+        # keep state exactly as returned
+        messages = res["messages"]
+
 if __name__ == "__main__":
-    # 1) Create a disposable event
-    res = agent.invoke({
-        "messages": [{
-            "role": "user",
-            "content": "Create an event on 2026-01-13 from 10:00 AM to 10:15 AM America/New_York called __UPDATE_ME_CANARY__"
-        }]
-    })
-    print(res["messages"][-1].content)
-
-    # 2) Update its title (agent should resolve via query+range and patch)
-    res = agent.invoke({
-        "messages": [{
-            "role": "user",
-            "content": "Rename '__UPDATE_ME_CANARY__' to '__UPDATED_CANARY__' between 2026-01-12 and 2026-01-14"
-        }]
-    })
-    print(res["messages"][-1].content)
-
-    # 3) Confirm
-    res = agent.invoke({
-        "messages": [{
-            "role": "user",
-            "content": "Find events matching '__UPDATED_CANARY__' between 2026-01-12 and 2026-01-14"
-        }]
-    })
-    print(res["messages"][-1].content)
-
-    # 4) Cleanup (delete)
-    res = agent.invoke({
-        "messages": [{
-            "role": "user",
-            "content": "Delete '__UPDATED_CANARY__' between 2026-01-12 and 2026-01-14"
-        }]
-    })
-    print(res["messages"][-1].content)
-
-
-
-
-
+    main()

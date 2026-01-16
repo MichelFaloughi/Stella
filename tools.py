@@ -461,6 +461,19 @@ def update_event(
     }
 
 
+
+@tool(
+    "get_current_datetime",
+    description="Return the current datetime in ISO-8601 format for a given timezone."
+)
+def get_current_datetime(tz: str = "America/New_York") -> str:
+    return datetime.now(ZoneInfo(tz)).isoformat()
+
+
+
+
+
+
 # ===================== TODO =====================
 # [ ] Add list_events_for_day(date, timezone) tool (needed to resolve event_id) - DONE
 # [ ] Add find_events(query, start_date, end_date) tool                         - DONE
