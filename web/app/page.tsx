@@ -142,9 +142,11 @@ export default function Home() {
                   } animate-fade-in`}
                 >
                   {msg.role === "stella" && (
-                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-sm font-semibold">
-                      S
-                    </div>
+                    <img
+                      src="/Stella_1024.png"
+                      alt="Stella"
+                      className="flex-shrink-0 w-8 h-8 rounded-full object-cover"
+                    />
                   )}
                   <div
                     className={`max-w-[80%] rounded-2xl px-4 py-2.5 ${
@@ -163,9 +165,11 @@ export default function Home() {
               {/* Typing Indicator */}
               {isLoading && (
                 <div className="flex items-start gap-3 justify-start animate-fade-in">
-                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-sm font-semibold">
-                    S
-                  </div>
+                  <img
+                    src="/Stella_1024.png"
+                    alt="Stella"
+                    className="flex-shrink-0 w-8 h-8 rounded-full object-cover"
+                  />
                   <div className="bg-gray-800 rounded-2xl px-4 py-2.5">
                     <div className="flex gap-1.5">
                       <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
