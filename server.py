@@ -6,24 +6,15 @@ from pydantic import BaseModel
 from agent import agent
 from main import SYSTEM_HINT
 
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN")
-
-
-
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_ORIGIN],
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 
 # keep chat state in memory (single-user, simple)
@@ -43,33 +34,3 @@ def chat(req: ChatRequest):
     reply = messages[-1].content
 
     return {"reply": reply}
-
-
-@app.get("/")
-def root():
-    return {"status": "ok"}
-
-
-from fastapi.responses import StreamingResponse
-import json
-import time
-
-@app.get("/chat/stream")
-def chat_stream(message: str):
-    def event_generator():
-        global messages
-        messages.append({"role": "user", "content": message})
-
-        for chunk in agent.stream({"messages": messages}):
-            if "output" in chunk:
-                yield f"data: {chunk['output']}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
-    )
-
