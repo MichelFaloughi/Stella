@@ -2,3 +2,8 @@
 .env
 credentials.json
 token.json
+
+# pycache 
+__pycache__/
+*.pyc
+
