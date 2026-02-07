@@ -41,6 +41,13 @@ export default function Home() {
     }
   }, [input]);
 
+  // Auto-focus textarea after response is received
+  useEffect(() => {
+    if (!isLoading && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [isLoading]);
+
   async function sendMessage(messageText?: string) {
     const textToSend = messageText || input.trim();
     if (!textToSend || isLoading) return;
@@ -50,6 +57,11 @@ export default function Home() {
     setInput("");
     setIsLoading(true);
     setIsAtBottom(true);
+    
+    // Focus textarea after clearing input (with slight delay to ensure state update)
+    setTimeout(() => {
+      textareaRef.current?.focus();
+    }, 0);
 
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/chat`, {
