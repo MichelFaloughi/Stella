@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { EventCard, type CalendarEvent } from "./components/EventCard";
 
 interface Message {
   role: "user" | "stella";
   content: string;
+  events?: CalendarEvent[];
 }
 
 export default function Home() {
@@ -71,7 +73,14 @@ export default function Home() {
       });
 
       const data = await res.json();
-      setMessages((m) => [...m, { role: "stella", content: data.reply }]);
+      setMessages((m) => [
+        ...m,
+        {
+          role: "stella",
+          content: data.reply ?? "",
+          events: Array.isArray(data.events) ? data.events : undefined,
+        },
+      ]);
     } catch (error) {
       setMessages((m) => [
         ...m,
@@ -155,9 +164,28 @@ export default function Home() {
                         : "bg-gray-800 text-gray-100"
                     }`}
                   >
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                      {msg.content}
-                    </p>
+                    {msg.role === "stella" &&
+                    msg.events &&
+                    msg.events.length > 0 ? (
+                      <div className="space-y-3">
+                        {msg.content ? (
+                          <p className="text-sm leading-relaxed whitespace-pre-wrap text-gray-300 mb-3">
+                            {msg.content}
+                          </p>
+                        ) : null}
+                        <ul className="space-y-3 list-none p-0 m-0">
+                          {msg.events.map((ev, j) => (
+                            <li key={j}>
+                              <EventCard event={ev} />
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : (
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                        {msg.content}
+                      </p>
+                    )}
                   </div>
                 </div>
               ))}
