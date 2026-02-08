@@ -5,7 +5,7 @@ from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
 
 # Calendar tools
-from tools_calendar import (
+from tools.calendar import (
     create_event,
     list_events_for_day,
     list_events_between,
@@ -16,7 +16,7 @@ from tools_calendar import (
 )
 
 # Gmail tools
-from tools_gmail import (
+from tools.gmail import (
     list_messages,
     get_message,
     trash_message,

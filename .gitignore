@@ -3,5 +3,6 @@
 credentials.json
 token.json
 
-pycache/
-
+# pycache 
+__pycache__/
+*.pyc

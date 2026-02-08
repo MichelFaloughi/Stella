@@ -1,4 +1,4 @@
-# tools_gmail.py
+# tools.gmail.py
 # Auth/service setup is plumbing; the agent shouldn’t call it directly.
 # Tools call get_service() internally.
 
