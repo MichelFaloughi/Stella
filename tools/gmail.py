@@ -1,29 +1,23 @@
 # tools.gmail.py
-# Auth/service setup is plumbing; the agent shouldn’t call it directly.
+# Auth/service setup is plumbing; the agent shouldn't call it directly.
 # Tools call get_service() internally.
 
 from langchain.tools import tool
 
-import os
 import base64
-from typing import Optional, Sequence, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+from tools.auth import get_creds, SCOPES
+
 
 # -----------------------
-# Scopes / config
+# Config
 # -----------------------
-DEFAULT_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/gmail.compose",
-]
 DEFAULT_USER_ID = "me"
 
 _SERVICE_CACHE = {
@@ -32,51 +26,19 @@ _SERVICE_CACHE = {
 }
 
 
-def get_creds(scopes: Optional[Sequence[str]] = None) -> Credentials:
-    """
-    Return valid OAuth Credentials for the given scopes.
-    - Loads token.json if present
-    - Refreshes if expired (and refresh_token exists)
-    - Otherwise runs local-server OAuth flow using credentials.json
-    - Writes token.json back to disk
-
-    NOTE:
-      If you already have token.json from Calendar with different scopes,
-      Google will require re-consent when you request Gmail scopes.
-    """
-    scopes = list(scopes or DEFAULT_SCOPES)
-
-    creds: Optional[Credentials] = None
-
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", scopes)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", scopes)
-            creds = flow.run_local_server(port=0)
-
-        with open("token.json", "w") as f:
-            f.write(creds.to_json())
-
-    return creds
-
-
-def get_service(scopes: Optional[Sequence[str]] = None):
+def get_service():
     """
     Return a Gmail API service:
       service = build("gmail", "v1", credentials=creds)
 
-    Cached in-process.
+    Cached in-process. Uses shared OAuth credentials from tools.auth (same token as Calendar).
     """
-    scopes_tuple = tuple(scopes or DEFAULT_SCOPES)
+    scopes_tuple = tuple(SCOPES)
 
     if _SERVICE_CACHE["service"] is not None and _SERVICE_CACHE["scopes"] == scopes_tuple:
         return _SERVICE_CACHE["service"]
 
-    creds = get_creds(scopes_tuple)
+    creds = get_creds()
     service = build("gmail", "v1", credentials=creds)
 
     _SERVICE_CACHE["scopes"] = scopes_tuple

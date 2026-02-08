@@ -2,17 +2,13 @@
 from langchain.tools import tool
 
 import datetime
-import os.path
-import os
-from typing import Optional, Sequence, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-DEFAULT_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+from tools.auth import get_creds, SCOPES
+
 DEFAULT_TZ = "America/New_York"
 
 # ---- simple in-process cache so we don't rebuild every tool call ----
@@ -22,45 +18,15 @@ _SERVICE_CACHE = {
 }
 
 
-def get_creds(scopes: Optional[Sequence[str]] = None) -> Credentials:
-    """
-    Return valid OAuth Credentials for the given scopes.
-    - Loads token.json if present
-    - Refreshes if expired (and refresh_token exists)
-    - Otherwise runs local-server OAuth flow using credentials.json
-    - Writes token.json back to disk
-    """
-    scopes = list(scopes or DEFAULT_SCOPES)
-
-    creds: Optional[Credentials] = None
-
-    # Load cached tokens if present
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", scopes)
-
-    # If no valid creds, refresh or run OAuth
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", scopes)
-            creds = flow.run_local_server(port=0)
-
-        # Persist for next run
-        with open("token.json", "w") as f:
-            f.write(creds.to_json())
-
-    return creds
-
-def get_service(scopes: Optional[Sequence[str]] = None):
+def get_service():
     """
     Return a Google Calendar API 'service' object:
       service = build("calendar", "v3", credentials=creds)
 
     Caches the service in-process so repeated tool calls are fast.
-    If scopes differ from the cached scopes, rebuilds the service.
+    Uses shared OAuth credentials from tools.auth (same token as Gmail).
     """
-    scopes_tuple = tuple(scopes or DEFAULT_SCOPES)
+    scopes_tuple = tuple(SCOPES)
 
     cached_scopes = _SERVICE_CACHE["scopes"]
     cached_service = _SERVICE_CACHE["service"]
@@ -68,7 +34,7 @@ def get_service(scopes: Optional[Sequence[str]] = None):
     if cached_service is not None and cached_scopes == scopes_tuple:
         return cached_service
 
-    creds = get_creds(scopes_tuple)
+    creds = get_creds()
     service = build("calendar", "v3", credentials=creds)
 
     _SERVICE_CACHE["scopes"] = scopes_tuple
