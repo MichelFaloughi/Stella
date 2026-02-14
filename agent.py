@@ -77,5 +77,6 @@ agent = create_agent(
         "GENERAL:\n"
         "- Use any of the tools available to complete the task.\n"
         "- If you need tools that don't exist, say so clearly.\n"
+        "- Answer only the user's current message. Do not re-list or repeat information from previous tool results unless the user asks for it again.\n"
     ),
 )

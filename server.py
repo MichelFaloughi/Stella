@@ -22,6 +22,8 @@ app.add_middleware(
 
 # Tool names that return a list of calendar events (we use the last one in the turn)
 EVENT_LIST_TOOLS = {"list_events_for_day", "list_events_between", "find_events"}
+# Tools that return a single event (create/update) — we show it as one event card
+EVENT_SINGLE_TOOLS = {"create_event", "update_event"}
 
 
 def _format_event_time(d: dict) -> str:
@@ -60,10 +62,19 @@ def _tool_events_to_frontend(events: list) -> list:
     return out
 
 
+def _get_tool_message_name(m):
+    """Get tool name from a tool message (object or dict)."""
+    return getattr(m, "name", None) or (m.get("name") if isinstance(m, dict) else None)
+
+
 def _is_event_list_tool_message(m) -> bool:
     """True if this message is a tool result from an event-listing tool."""
-    name = getattr(m, "name", None) or (m.get("name") if isinstance(m, dict) else None)
-    return name in EVENT_LIST_TOOLS
+    return _get_tool_message_name(m) in EVENT_LIST_TOOLS
+
+
+def _is_event_single_tool_message(m) -> bool:
+    """True if this message is a tool result from create_event or update_event."""
+    return _get_tool_message_name(m) in EVENT_SINGLE_TOOLS
 
 
 def _get_tool_message_content(m):
@@ -75,30 +86,47 @@ def _get_tool_message_content(m):
     return None
 
 
-def _extract_events_from_messages(messages: list) -> list:
-    """Find the last event-list tool result in the message history and return frontend events."""
-    raw = None
-    for m in reversed(messages):
-        if _is_event_list_tool_message(m):
-            raw = _get_tool_message_content(m)
-            if raw is not None:
-                break
-    if raw is None:
-        return []
-
+def _parse_tool_content(raw) -> dict | None:
+    """Parse tool message content (str or dict) to a dict. Returns None on failure."""
     try:
         if isinstance(raw, str):
             try:
-                data = json.loads(raw)
+                return json.loads(raw)
             except json.JSONDecodeError:
-                data = ast.literal_eval(raw)
-        else:
-            data = raw
+                return ast.literal_eval(raw)
+        if isinstance(raw, dict):
+            return raw
+        return None
     except (json.JSONDecodeError, TypeError, ValueError, SyntaxError):
-        return []
+        return None
 
-    raw_events = data.get("events") if isinstance(data, dict) else []
-    return _tool_events_to_frontend(raw_events)
+
+def _extract_events_from_messages(messages: list) -> list:
+    """Find the last event-producing tool result (list or single) and return frontend events."""
+    for m in reversed(messages):
+        name = _get_tool_message_name(m)
+        content = _get_tool_message_content(m)
+        if content is None:
+            continue
+
+        if name in EVENT_LIST_TOOLS:
+            data = _parse_tool_content(content)
+            if data is not None:
+                raw_events = data.get("events") if isinstance(data, dict) else []
+                return _tool_events_to_frontend(raw_events)
+
+        if name in EVENT_SINGLE_TOOLS:
+            data = _parse_tool_content(content)
+            if not isinstance(data, dict):
+                continue
+            if data.get("error") or data.get("updated") is False:
+                continue
+            # create_event returns event_id, summary, start, end, htmlLink
+            # update_event returns updated, event_id, summary, start, end, location, htmlLink
+            if data.get("event_id") or data.get("summary") is not None:
+                return _tool_events_to_frontend([data])
+
+    return []
 
 
 # keep chat state in memory (single-user, simple)
