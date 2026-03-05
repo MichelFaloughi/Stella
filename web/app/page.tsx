@@ -2,11 +2,13 @@
 
 import { useState, useRef, useEffect } from "react";
 import { EventCard, type CalendarEvent } from "./components/EventCard";
+import { EmailCard, type Email } from "./components/EmailCard";
 
 interface Message {
   role: "user" | "stella";
   content: string;
   events?: CalendarEvent[];
+  emails?: Email[];
 }
 
 export default function Home() {
@@ -79,6 +81,7 @@ export default function Home() {
           role: "stella",
           content: data.reply ?? "",
           events: Array.isArray(data.events) ? data.events : undefined,
+          emails: Array.isArray(data.emails) ? data.emails : undefined,
         },
       ]);
     } catch (error) {
@@ -165,21 +168,31 @@ export default function Home() {
                     }`}
                   >
                     {msg.role === "stella" &&
-                    msg.events &&
-                    msg.events.length > 0 ? (
+                    (msg.events?.length || msg.emails?.length) ? (
                       <div className="space-y-3">
                         {msg.content ? (
                           <p className="text-sm leading-relaxed whitespace-pre-wrap text-gray-300 mb-3">
                             {msg.content}
                           </p>
                         ) : null}
-                        <ul className="space-y-3 list-none p-0 m-0">
-                          {msg.events.map((ev, j) => (
-                            <li key={j}>
-                              <EventCard event={ev} />
-                            </li>
-                          ))}
-                        </ul>
+                        {msg.events && msg.events.length > 0 && (
+                          <ul className="space-y-3 list-none p-0 m-0">
+                            {msg.events.map((ev, j) => (
+                              <li key={j}>
+                                <EventCard event={ev} />
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {msg.emails && msg.emails.length > 0 && (
+                          <ul className="space-y-3 list-none p-0 m-0">
+                            {msg.emails.map((em, j) => (
+                              <li key={j}>
+                                <EmailCard email={em} />
+                              </li>
+                            ))}
+                          </ul>
+                        )}
                       </div>
                     ) : (
                       <p className="text-sm leading-relaxed whitespace-pre-wrap">
