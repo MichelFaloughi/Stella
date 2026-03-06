@@ -15,6 +15,9 @@ from tools.gmail import (
     delete_message_permanently,
     get_message,
     list_messages,
+    mark_all_as_read,
+    mark_as_read,
+    mark_as_unread,
     send_draft,
     trash_message,
     update_draft,
@@ -253,6 +256,185 @@ class TestBatchModifyLabels:
 
         assert result["add_label_ids"] == []
         assert result["remove_label_ids"] == []
+
+
+# ---------------------------------------------------------------------------
+# mark_as_read
+# ---------------------------------------------------------------------------
+
+class TestMarkAsRead:
+    def test_marks_message_as_read(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).modify.return_value.execute.return_value = {
+            "id": "msg1",
+            "threadId": "t1",
+            "labelIds": ["INBOX"],
+        }
+
+        result = mark_as_read.func(message_id="msg1")
+
+        assert result["marked_read"] is True
+        assert result["message_id"] == "msg1"
+        assert "UNREAD" not in result["label_ids"]
+
+    def test_correct_message_id_and_body_sent(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).modify.return_value.execute.return_value = {
+            "id": "msg42", "threadId": "t1", "labelIds": ["INBOX"]
+        }
+
+        mark_as_read.func(message_id="msg42")
+
+        call = _msgs_resource(mock_gmail_service).modify.call_args
+        assert call.kwargs["id"] == "msg42"
+        assert call.kwargs["body"] == {"removeLabelIds": ["UNREAD"]}
+
+    def test_api_error_propagates(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).modify.return_value.execute.side_effect = Exception(
+            "API error"
+        )
+
+        with pytest.raises(Exception, match="API error"):
+            mark_as_read.func(message_id="msg1")
+
+
+# ---------------------------------------------------------------------------
+# mark_as_unread
+# ---------------------------------------------------------------------------
+
+class TestMarkAsUnread:
+    def test_marks_message_as_unread(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).modify.return_value.execute.return_value = {
+            "id": "msg1",
+            "threadId": "t1",
+            "labelIds": ["INBOX", "UNREAD"],
+        }
+
+        result = mark_as_unread.func(message_id="msg1")
+
+        assert result["marked_unread"] is True
+        assert result["message_id"] == "msg1"
+        assert "UNREAD" in result["label_ids"]
+
+    def test_correct_message_id_and_body_sent(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).modify.return_value.execute.return_value = {
+            "id": "msg7", "threadId": "t1", "labelIds": ["INBOX", "UNREAD"]
+        }
+
+        mark_as_unread.func(message_id="msg7")
+
+        call = _msgs_resource(mock_gmail_service).modify.call_args
+        assert call.kwargs["id"] == "msg7"
+        assert call.kwargs["body"] == {"addLabelIds": ["UNREAD"]}
+
+    def test_api_error_propagates(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).modify.return_value.execute.side_effect = Exception(
+            "API error"
+        )
+
+        with pytest.raises(Exception, match="API error"):
+            mark_as_unread.func(message_id="msg1")
+
+
+# ---------------------------------------------------------------------------
+# mark_all_as_read
+# ---------------------------------------------------------------------------
+
+class TestMarkAllAsRead:
+    def test_marks_all_unread_and_returns_count(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).list.return_value.execute.return_value = {
+            "messages": [{"id": "msg1"}, {"id": "msg2"}, {"id": "msg3"}]
+        }
+        _msgs_resource(mock_gmail_service).batchModify.return_value.execute.return_value = None
+
+        result = mark_all_as_read.func()
+
+        assert result["marked_read"] is True
+        assert result["count"] == 3
+        assert result["message_ids"] == ["msg1", "msg2", "msg3"]
+
+    def test_no_unread_messages_skips_batch_modify(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).list.return_value.execute.return_value = {"messages": []}
+
+        result = mark_all_as_read.func()
+
+        assert result["marked_read"] is True
+        assert result["count"] == 0
+        assert result["message_ids"] == []
+        _msgs_resource(mock_gmail_service).batchModify.assert_not_called()
+
+    def test_missing_messages_key_treated_as_empty(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).list.return_value.execute.return_value = {}
+
+        result = mark_all_as_read.func()
+
+        assert result["count"] == 0
+        _msgs_resource(mock_gmail_service).batchModify.assert_not_called()
+
+    def test_default_label_includes_inbox_and_unread(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).list.return_value.execute.return_value = {"messages": []}
+
+        mark_all_as_read.func()
+
+        list_call = _msgs_resource(mock_gmail_service).list.call_args
+        assert "INBOX" in list_call.kwargs["labelIds"]
+        assert "UNREAD" in list_call.kwargs["labelIds"]
+
+    def test_custom_label_forwarded_with_unread_appended(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).list.return_value.execute.return_value = {"messages": []}
+
+        mark_all_as_read.func(label_ids=["STARRED"])
+
+        list_call = _msgs_resource(mock_gmail_service).list.call_args
+        assert "STARRED" in list_call.kwargs["labelIds"]
+        assert "UNREAD" in list_call.kwargs["labelIds"]
+        assert "INBOX" not in list_call.kwargs["labelIds"]
+
+    def test_unread_not_duplicated_if_already_in_label_ids(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).list.return_value.execute.return_value = {"messages": []}
+
+        mark_all_as_read.func(label_ids=["INBOX", "UNREAD"])
+
+        list_call = _msgs_resource(mock_gmail_service).list.call_args
+        assert list_call.kwargs["labelIds"].count("UNREAD") == 1
+
+    def test_query_forwarded_to_list(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).list.return_value.execute.return_value = {"messages": []}
+
+        mark_all_as_read.func(query="from:boss@example.com")
+
+        list_call = _msgs_resource(mock_gmail_service).list.call_args
+        assert list_call.kwargs["q"] == "from:boss@example.com"
+
+    def test_batch_modify_removes_unread_label(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).list.return_value.execute.return_value = {
+            "messages": [{"id": "a"}, {"id": "b"}]
+        }
+        _msgs_resource(mock_gmail_service).batchModify.return_value.execute.return_value = None
+
+        mark_all_as_read.func()
+
+        batch_call = _msgs_resource(mock_gmail_service).batchModify.call_args
+        body = batch_call.kwargs["body"]
+        assert body["ids"] == ["a", "b"]
+        assert body["removeLabelIds"] == ["UNREAD"]
+
+    def test_api_error_on_list_propagates(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).list.return_value.execute.side_effect = Exception(
+            "API error"
+        )
+
+        with pytest.raises(Exception, match="API error"):
+            mark_all_as_read.func()
+
+    def test_api_error_on_batch_modify_propagates(self, mock_gmail_service):
+        _msgs_resource(mock_gmail_service).list.return_value.execute.return_value = {
+            "messages": [{"id": "msg1"}]
+        }
+        _msgs_resource(mock_gmail_service).batchModify.return_value.execute.side_effect = Exception(
+            "batch error"
+        )
+
+        with pytest.raises(Exception, match="batch error"):
+            mark_all_as_read.func()
 
 
 # ---------------------------------------------------------------------------

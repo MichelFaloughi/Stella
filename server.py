@@ -1,7 +1,10 @@
 # server.py
 import ast
 import json
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -137,8 +140,8 @@ def _extract_emails_from_messages(messages: list) -> list:
     return list(reversed(emails))
 
 
-def _parse_tool_content(raw) -> dict | None:
-    """Parse tool message content (str or dict) to a dict. Returns None on failure."""
+def _parse_tool_content(raw) -> dict | list | None:
+    """Parse tool message content (str, dict, or list) to a structured value. Returns None on failure."""
     try:
         if isinstance(raw, str):
             try:
@@ -147,6 +150,10 @@ def _parse_tool_content(raw) -> dict | None:
                 return ast.literal_eval(raw)
         if isinstance(raw, dict):
             return raw
+        if isinstance(raw, list):
+            logger.warning("_parse_tool_content: received a raw list (%d items); returning as-is", len(raw))
+            return raw
+        logger.warning("_parse_tool_content: unexpected type %s, dropping", type(raw).__name__)
         return None
     except (json.JSONDecodeError, TypeError, ValueError, SyntaxError):
         return None
@@ -155,6 +162,8 @@ def _parse_tool_content(raw) -> dict | None:
 def _extract_events_from_messages(messages: list) -> list:
     """Find the last event-producing tool result (list or single) and return frontend events."""
     for m in reversed(messages):
+        if _is_human_message(m):
+            break
         name = _get_tool_message_name(m)
         content = _get_tool_message_content(m)
         if content is None:
@@ -163,7 +172,10 @@ def _extract_events_from_messages(messages: list) -> list:
         if name in EVENT_LIST_TOOLS:
             data = _parse_tool_content(content)
             if data is not None:
-                raw_events = data.get("events") if isinstance(data, dict) else []
+                if isinstance(data, list):
+                    raw_events = data
+                else:
+                    raw_events = data.get("events") if isinstance(data, dict) else []
                 return _tool_events_to_frontend(raw_events)
 
         if name in EVENT_SINGLE_TOOLS:
@@ -192,7 +204,8 @@ def chat(req: ChatRequest):
     res = agent.invoke({"messages": messages})
 
     messages = res["messages"]
-    reply = messages[-1].content
+    last = messages[-1]
+    reply = last.content if hasattr(last, "content") and isinstance(last.content, str) else ""
     events = _extract_events_from_messages(messages)
     emails = _extract_emails_from_messages(messages)
 
