@@ -111,7 +111,7 @@ export default function Home() {
   ];
 
   return (
-    <div className="flex flex-col h-screen bg-gray-900 text-gray-100">
+    <div className="flex flex-col h-screen bg-black text-gray-100">
       {/* Header */}
       <header className="flex flex-col items-center justify-center py-6 px-4 border-b border-gray-800">
         <h1 className="text-2xl font-semibold mb-1">Stella</h1>
@@ -227,7 +227,7 @@ export default function Home() {
       </div>
 
       {/* Input Bar */}
-      <div className="border-t border-gray-800 bg-gray-900 px-4 py-4">
+      <div className="border-t border-gray-800 bg-black px-4 py-4">
         <div className="max-w-[700px] mx-auto">
           <div className="flex items-end gap-3 bg-gray-800 rounded-2xl px-4 py-3 border border-gray-700">
             <textarea
