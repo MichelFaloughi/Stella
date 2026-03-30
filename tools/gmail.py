@@ -250,6 +250,94 @@ def batch_modify_labels(
 
 
 @tool(
+    "mark_as_read",
+    description="Mark a single Gmail message as read by removing the UNREAD label.",
+)
+def mark_as_read(
+    message_id: str,
+    user_id: str = DEFAULT_USER_ID,
+) -> Dict[str, Any]:
+    service = get_service()
+    resp = (
+        service.users()
+        .messages()
+        .modify(userId=user_id, id=message_id, body={"removeLabelIds": ["UNREAD"]})
+        .execute()
+    )
+    return {
+        "marked_read": True,
+        "message_id": resp.get("id"),
+        "thread_id": resp.get("threadId"),
+        "label_ids": resp.get("labelIds", []),
+    }
+
+
+@tool(
+    "mark_as_unread",
+    description="Mark a single Gmail message as unread by adding the UNREAD label.",
+)
+def mark_as_unread(
+    message_id: str,
+    user_id: str = DEFAULT_USER_ID,
+) -> Dict[str, Any]:
+    service = get_service()
+    resp = (
+        service.users()
+        .messages()
+        .modify(userId=user_id, id=message_id, body={"addLabelIds": ["UNREAD"]})
+        .execute()
+    )
+    return {
+        "marked_unread": True,
+        "message_id": resp.get("id"),
+        "thread_id": resp.get("threadId"),
+        "label_ids": resp.get("labelIds", []),
+    }
+
+
+@tool(
+    "mark_all_as_read",
+    description=(
+        "Mark all unread messages in a label as read using a single batchModify call. "
+        "Defaults to INBOX. Provide label_ids to target a different label, or query for "
+        "Gmail search syntax filtering. Processes up to 500 messages (one API page)."
+    ),
+)
+def mark_all_as_read(
+    label_ids: Optional[List[str]] = None,
+    query: Optional[str] = None,
+    max_results: int = 500,
+    user_id: str = DEFAULT_USER_ID,
+) -> Dict[str, Any]:
+    service = get_service()
+
+    # Always include UNREAD so we only fetch messages that actually need changing
+    effective_labels = list(label_ids or ["INBOX"])
+    if "UNREAD" not in effective_labels:
+        effective_labels.append("UNREAD")
+
+    resp = (
+        service.users()
+        .messages()
+        .list(userId=user_id, q=query or None, labelIds=effective_labels, maxResults=max_results)
+        .execute()
+    )
+
+    msgs = resp.get("messages") or []
+    if not msgs:
+        return {"marked_read": True, "count": 0, "message_ids": []}
+
+    message_ids = [m["id"] for m in msgs]
+
+    service.users().messages().batchModify(
+        userId=user_id,
+        body={"ids": message_ids, "removeLabelIds": ["UNREAD"]},
+    ).execute()
+
+    return {"marked_read": True, "count": len(message_ids), "message_ids": message_ids}
+
+
+@tool(
     "create_draft",
     description="Create a Gmail draft. Provide to/subject/body. Returns draft_id and message_id.",
 )

@@ -1,71 +1,40 @@
 TODO: Make a requirements.txt file
 
+# Stella
 
-# Stella 🗓️✨
+Personal AI agent for Google Calendar and Gmail. Natural language in, real API calls out.
 
-**Stella** is a personal AI agent that manages my Google Calendar on my behalf.
+## Tools
 
-It can understand natural language requests like:
-> “Create a meeting tomorrow from 1–3pm”  
-and safely turn them into real calendar actions using Google’s API.
+**Calendar (7):** create, list by day, list by range, find, delete, update, get current datetime
 
----
-
-## What it does (so far)
-
-- ✅ Create calendar events via natural language
-- 🔐 OAuth-based Google Calendar authentication
-- 🧠 Tool-calling agent (no fake “I did it” responses)
-- 🗂️ Clean separation between agent logic and calendar tools
-
----
-
-## Planned features
-
-- 🗑️ Delete events  
-- ✏️ Update / reschedule events  
-- 🔍 Find & list events (by day or query)  
-- 🧾 Daily summaries  
-- 🛡️ Safety guardrails for destructive actions  
-
----
+**Gmail (11):** list messages, get message, trash, delete permanently, batch modify labels, mark as read, mark as unread, create draft, update draft, send draft, create reply draft
 
 ## Tech stack
 
-- Python 3.12  
-- LangChain (tool-calling agents)  
-- OpenAI (`gpt-4o-mini`)  
-- Google Calendar API (OAuth2)  
+- Python 3.12, FastAPI, LangChain, OpenAI `gpt-4o-mini`
+- Google Calendar + Gmail APIs (unified OAuth2, shared `token.json`)
+- Next.js 15 / React 19 frontend with EventCard + EmailCard components
 
----
+## Setup
 
-## How it works (high level)
+1. Create a Google Cloud project, enable Calendar and Gmail APIs
+2. Add `credentials.json` to the repo root
+3. Set `OPENAI_API_KEY` in your environment
+4. Run and authorize once in the browser
 
-User → Agent (LLM)
-↓
-Tools (create / update / delete)
-↓
-Google Calendar API
-
-
-The agent **can only act through explicit tools**, keeping behavior predictable and safe.
-
----
-
-## Setup (minimal)
-
-1. Create a Google Cloud project  
-2. Enable Google Calendar API  
-3. Add `credentials.json` to the repo  
-4. Set `OPENAI_API_KEY` in your environment  
-5. Run the agent and authorize once in the browser  
-
----
+```bash
+python main.py              # terminal CLI
+uvicorn server:app --reload # backend
+cd web && npm run dev       # frontend
+pytest tests/               # tests
+```
 
 ## Status
 
-🚧 Work in progress — built as a personal automation / agent playground.
+Work in progress — personal automation/agent playground.
 
----
-
-*Built for learning, safety, and control — not as a generic SaaS bot.*
+### Recent changes
+- Fixed stale event cards bleeding across turns (`_extract_events_from_messages` now stops at the current turn boundary, matching email extraction behavior)
+- Fixed unsafe `messages[-1].content` access in the chat endpoint — now guarded against non-AIMessage types
+- Added `mark_as_read` and `mark_as_unread` Gmail tools

@@ -1,0 +1,1043 @@
+michel@boulmichbeast:/mnt/c/Users/Michel/OneDrive/Projects/agents/Stella$ claude
+
+ ▐▛███▜▌   Claude Code v2.1.70
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    /mnt/c/Users/Michel/OneDrive/Projects/agents/Stella
+
+❯ Read through server.py and agent.py and give me an assessment of the response
+   parsing logic. Identify any fragility or edge cases that could cause issues
+  in production.
+
+❯ Tool loaded.
+
+● Read 2 files (ctrl+o to expand)
+
+● Here's my assessment of the response parsing logic across both files:
+
+  ---
+  Response Parsing Assessment
+
+  Critical Issues
+
+  1. Cross-turn pollution in _extract_events_from_messages (server.py:155-178)
+
+  _extract_events_from_messages walks backward through the full message history but
+  never stops at the previous human message. _extract_emails_from_messages (line
+  131) does stop at human messages — this asymmetry is a real bug. If the current
+  turn has no event tool results, the parser will surface events from a previous
+  turn and render stale cards.
+
+  2. Fragile messages[-1].content assumption (server.py:195)
+
+  reply = messages[-1].content assumes the last message in the list is an AIMessage
+  with a .content attribute. If the agent ends on a ToolMessage or returns an
+  unexpected type, this raises AttributeError and the entire request fails with a
+  500.
+
+  3. Global message state without locking (server.py:182, 194)
+
+  messages is a module-level list. Under any concurrent load (two browser tabs, a
+  client retry), two requests can interleave reads/writes on this list. The
+  assignment messages = res["messages"] on line 194 is not atomic.
+
+  ---
+  Parsing Logic Fragility
+
+  4. _parse_tool_content drops raw lists (server.py:140-152)
+
+  If a tool returns a Python list instead of a dict, the function returns None —
+  silently. Then in _extract_events_from_messages, data.get("events") on a None
+  result short-circuits to an empty list. No log, no card.
+
+  5. Event detection heuristic is fragile (server.py:175)
+
+  if data.get("event_id") or data.get("summary") is not None:
+
+  This heuristic works but is brittle. An error response dict that happens to
+  include a summary key (e.g., {"error": "...", "summary": None}) evaluates None is
+  not None → False, so it's safe in that case. But if a tool ever returns
+  {"summary": ""}, that's truthy enough to render a card from an otherwise-failed
+  call.
+
+  6. Error check has a subtle operator precedence risk (server.py:173)
+
+  if data.get("error") or data.get("updated") is False:
+
+  This parses as data.get("error") or (data.get("updated") is False) — which is
+  actually the intended logic. But if a tool returns {"error": ""} (empty string),
+  the falsy check passes and the condition falls through to the event_id/summary
+  check, potentially rendering an error result as a card.
+
+  7. Email headers format assumption (server.py:116-121)
+
+  headers = data.get("headers") or {}
+  return { "subject": headers.get("subject") ... }
+
+  Google's raw Gmail API returns headers as a list of {"name": ..., "value": ...}
+  dicts. If get_message in gmail.py passes that through without normalizing it to a
+  flat dict, headers.get("subject") will always be None and all email cards will
+  show "(No subject)" and empty sender fields. Whether this breaks depends on
+  gmail.py — but the server assumes a dict format that the API doesn't natively
+  produce.
+
+  ---
+  Minor Issues
+
+  8. Aggressive reply truncation (server.py:201-203)
+
+  When events or emails are present, the reply is truncated to the first line. If
+  the agent produces a multi-sentence intro (e.g., "Here are your events for today.
+  Note that the team sync moved to 3 PM."), only the first sentence is shown. The
+  user loses context without knowing it.
+
+  9. list_messages not in EMAIL_DETAIL_TOOLS — intentional but asymmetric
+
+  Listing emails with list_messages returns no email cards; the user must trigger
+  get_message to get cards. Calendar listings always produce cards. This asymmetry
+  isn't a bug but could confuse users who expect cards after asking "show me my
+  emails."
+
+  10. strftime('%p') is locale-dependent (server.py:41)
+
+  On a system with a non-English locale, this returns localized AM/PM strings.
+  Minor, but worth noting for any future deployment.
+
+  ---
+  Summary Table
+
+  ┌──────────┬───────────────────────────────┬───────────────────────────────────┐
+  │ Severity │             Issue             │             Location              │
+  ├──────────┼───────────────────────────────┼───────────────────────────────────┤
+  │ High     │ Cross-turn event pollution    │ _extract_events_from_messages     │
+  ├──────────┼───────────────────────────────┼───────────────────────────────────┤
+  │ High     │ messages[-1].content          │ chat() line 195                   │
+  │          │ AttributeError risk           │                                   │
+  ├──────────┼───────────────────────────────┼───────────────────────────────────┤
+  │ Medium   │ No concurrency guard on       │ chat() lines 182/194              │
+  │          │ global messages               │                                   │
+  ├──────────┼───────────────────────────────┼───────────────────────────────────┤
+  │ Medium   │ Raw list tool results         │ _parse_tool_content               │
+  │          │ silently dropped              │                                   │
+  ├──────────┼───────────────────────────────┼───────────────────────────────────┤
+  │ Medium   │ Email headers dict format     │ _tool_message_to_email            │
+  │          │ assumed                       │                                   │
+  ├──────────┼───────────────────────────────┼───────────────────────────────────┤
+  │ Low      │ Aggressive first-line reply   │ chat() lines 200-203              │
+  │          │ truncation                    │                                   │
+  ├──────────┼───────────────────────────────┼───────────────────────────────────┤
+  │ Low      │ Empty-string error passes     │ _extract_events_from_messages:173 │
+  │          │ falsy check                   │                                   │
+  ├──────────┼───────────────────────────────┼───────────────────────────────────┤
+  │ Low      │ Locale-dependent AM/PM        │ _format_event_time:41             │
+  │          │ formatting                    │                                   │
+  └──────────┴───────────────────────────────┴───────────────────────────────────┘
+
+  The most impactful fix would be adding the human message boundary check to
+  _extract_events_from_messages, mirroring what _extract_emails_from_messages
+  already does correctly.
+
+✻ Baked for 1m 19s
+
+❯ Fix the two high-severity issues first: add the human message boundary check
+  to _extract_events_from_messages to mirror _extract_emails_from_messages, and
+   make the messages[-1].content access safe against non-AIMessage types. Show
+  me the changes.
+
+❯ Tool loaded.
+
+● Update(server.py)
+  ⎿  Added 2 lines
+      155  def _extract_events_from_messages(messages: list) -> list:
+      156      """Find the last event-producing tool result (list or single)
+            and return frontend events."""
+      157      for m in reversed(messages):
+      158 +        if _is_human_message(m):
+      159 +            break
+      160          name = _get_tool_message_name(m)
+      161          content = _get_tool_message_content(m)
+      162          if content is None:
+
+● Update(server.py)
+  ⎿  Added 2 lines, removed 1 line
+      194      res = agent.invoke({"messages": messages})
+      195
+      196      messages = res["messages"]
+      197 -    reply = messages[-1].content
+      197 +    last = messages[-1]
+      198 +    reply = last.content if hasattr(last, "content") and
+          +isinstance(last.content, str) else ""
+      199      events = _extract_events_from_messages(messages)
+      200      emails = _extract_emails_from_messages(messages)
+      201
+
+● Here are the two changes:
+
+  Fix 1 — Cross-turn pollution (server.py:157)
+  # Before: walked the entire message history
+  for m in reversed(messages):
+      name = _get_tool_message_name(m)
+
+  # After: stops at the boundary of the current turn
+  for m in reversed(messages):
+      if _is_human_message(m):
+          break
+      name = _get_tool_message_name(m)
+  Now mirrors _extract_emails_from_messages exactly. Stale event cards from a
+  previous turn can no longer bleed into the current response.
+
+  Fix 2 — Safe messages[-1].content access (server.py:195)
+  # Before: AttributeError if last message isn't AIMessage
+  reply = messages[-1].content
+
+  # After: safe fallback to empty string
+  last = messages[-1]
+  reply = last.content if hasattr(last, "content") and isinstance(last.content, str)
+   else ""
+  The isinstance(..., str) check also guards against content being a list (LangChain
+   uses list[ContentBlock] for multimodal messages), which would otherwise cause
+  downstream issues when the frontend tries to render it.
+
+❯ Now add mark_as_read and mark_as_unread tools to tools/gmail.py, register
+  them in agent.py, and write pytest tests for both covering success and error
+  cases.
+
+● Let me read the relevant files first.
+
+● Read 2 files (ctrl+o to expand)
+
+● Now I have everything I need. Let me make all three changes in parallel.
+
+● Update(tools/gmail.py)
+  ⎿  Added 46 lines
+      250
+      251
+      252  @tool(
+      253 +    "mark_as_read",
+      254 +    description="Mark a single Gmail message as read by removing
+          +the UNREAD label.",
+      255 +)
+      256 +def mark_as_read(
+      257 +    message_id: str,
+      258 +    user_id: str = DEFAULT_USER_ID,
+      259 +) -> Dict[str, Any]:
+      260 +    service = get_service()
+      261 +    resp = (
+      262 +        service.users()
+      263 +        .messages()
+      264 +        .modify(userId=user_id, id=message_id,
+          +body={"removeLabelIds": ["UNREAD"]})
+      265 +        .execute()
+      266 +    )
+      267 +    return {
+      268 +        "marked_read": True,
+      269 +        "message_id": resp.get("id"),
+      270 +        "thread_id": resp.get("threadId"),
+      271 +        "label_ids": resp.get("labelIds", []),
+      272 +    }
+      273 +
+      274 +
+      275 +@tool(
+      276 +    "mark_as_unread",
+      277 +    description="Mark a single Gmail message as unread by adding
+          +the UNREAD label.",
+      278 +)
+      279 +def mark_as_unread(
+      280 +    message_id: str,
+      281 +    user_id: str = DEFAULT_USER_ID,
+      282 +) -> Dict[str, Any]:
+      283 +    service = get_service()
+      284 +    resp = (
+      285 +        service.users()
+      286 +        .messages()
+      287 +        .modify(userId=user_id, id=message_id,
+          +body={"addLabelIds": ["UNREAD"]})
+      288 +        .execute()
+      289 +    )
+      290 +    return {
+      291 +        "marked_unread": True,
+      292 +        "message_id": resp.get("id"),
+      293 +        "thread_id": resp.get("threadId"),
+      294 +        "label_ids": resp.get("labelIds", []),
+      295 +    }
+      296 +
+      297 +
+      298 +@tool(
+      299      "create_draft",
+      300      description="Create a Gmail draft. Provide to/subject/body.
+           Returns draft_id and message_id.",
+      301  )
+
+● Update(agent.py)
+  ⎿  Added 2 lines
+      22      trash_message,
+      23      delete_message_permanently,
+      24      batch_modify_labels,
+      25 +    mark_as_read,
+      26 +    mark_as_unread,
+      27      create_draft,
+      28      update_draft,
+      29      send_draft,
+
+● Update(agent.py)
+  ⎿  Added 2 lines
+      50      trash_message,
+      51      delete_message_permanently,
+      52      batch_modify_labels,
+      53 +    mark_as_read,
+      54 +    mark_as_unread,
+      55      create_draft,
+      56      update_draft,
+      57      send_draft,
+
+● Now the tests:
+
+● Update(tests/test_gmail_tools.py)
+  ⎿  Added 2 lines
+      15      delete_message_permanently,
+      16      get_message,
+      17      list_messages,
+      18 +    mark_as_read,
+      19 +    mark_as_unread,
+      20      send_draft,
+      21      trash_message,
+      22      update_draft,
+
+● Update(tests/test_gmail_tools.py)
+  ⎿  Added 76 lines
+      258
+      259
+      260  # ---------------------------------------------------------------
+           ------------
+      261 +# mark_as_read
+      262 +# ---------------------------------------------------------------
+          +------------
+      263 +
+      264 +class TestMarkAsRead:
+      265 +    def test_marks_message_as_read(self, mock_gmail_service):
+      266 +        _msgs_resource(mock_gmail_service).modify.return_value.ex
+          +ecute.return_value = {
+      267 +            "id": "msg1",
+      268 +            "threadId": "t1",
+      269 +            "labelIds": ["INBOX"],
+      270 +        }
+      271 +
+      272 +        result = mark_as_read.func(message_id="msg1")
+      273 +
+      274 +        assert result["marked_read"] is True
+      275 +        assert result["message_id"] == "msg1"
+      276 +        assert "UNREAD" not in result["label_ids"]
+      277 +
+      278 +    def test_correct_message_id_and_body_sent(self,
+          +mock_gmail_service):
+      279 +        _msgs_resource(mock_gmail_service).modify.return_value.ex
+          +ecute.return_value = {
+      280 +            "id": "msg42", "threadId": "t1", "labelIds":
+          +["INBOX"]
+      281 +        }
+      282 +
+      283 +        mark_as_read.func(message_id="msg42")
+      284 +
+      285 +        call =
+          +_msgs_resource(mock_gmail_service).modify.call_args
+      286 +        assert call.kwargs["id"] == "msg42"
+      287 +        assert call.kwargs["body"] == {"removeLabelIds":
+          +["UNREAD"]}
+      288 +
+      289 +    def test_api_error_propagates(self, mock_gmail_service):
+      290 +        _msgs_resource(mock_gmail_service).modify.return_value.ex
+          +ecute.side_effect = Exception(
+      291 +            "API error"
+      292 +        )
+      293 +
+      294 +        with pytest.raises(Exception, match="API error"):
+      295 +            mark_as_read.func(message_id="msg1")
+      296 +
+      297 +
+      298 +# ---------------------------------------------------------------
+          +------------
+      299 +# mark_as_unread
+      300 +# ---------------------------------------------------------------
+          +------------
+      301 +
+      302 +class TestMarkAsUnread:
+      303 +    def test_marks_message_as_unread(self, mock_gmail_service):
+      304 +        _msgs_resource(mock_gmail_service).modify.return_value.ex
+          +ecute.return_value = {
+      305 +            "id": "msg1",
+      306 +            "threadId": "t1",
+      307 +            "labelIds": ["INBOX", "UNREAD"],
+      308 +        }
+      309 +
+      310 +        result = mark_as_unread.func(message_id="msg1")
+      311 +
+      312 +        assert result["marked_unread"] is True
+      313 +        assert result["message_id"] == "msg1"
+      314 +        assert "UNREAD" in result["label_ids"]
+      315 +
+      316 +    def test_correct_message_id_and_body_sent(self,
+          +mock_gmail_service):
+      317 +        _msgs_resource(mock_gmail_service).modify.return_value.ex
+          +ecute.return_value = {
+      318 +            "id": "msg7", "threadId": "t1", "labelIds": ["INBOX",
+          + "UNREAD"]
+      319 +        }
+      320 +
+      321 +        mark_as_unread.func(message_id="msg7")
+      322 +
+      323 +        call =
+          +_msgs_resource(mock_gmail_service).modify.call_args
+      324 +        assert call.kwargs["id"] == "msg7"
+      325 +        assert call.kwargs["body"] == {"addLabelIds": ["UNREAD"]}
+      326 +
+      327 +    def test_api_error_propagates(self, mock_gmail_service):
+      328 +        _msgs_resource(mock_gmail_service).modify.return_value.ex
+          +ecute.side_effect = Exception(
+      329 +            "API error"
+      330 +        )
+      331 +
+      332 +        with pytest.raises(Exception, match="API error"):
+      333 +            mark_as_unread.func(message_id="msg1")
+      334 +
+      335 +
+      336 +# ---------------------------------------------------------------
+          +------------
+      337  # create_draft
+      338  # ---------------------------------------------------------------
+           ------------
+      339
+
+● All done. Here's a summary of the changes:
+
+  tools/gmail.py — two new tools added before create_draft:
+  - mark_as_read: calls messages.modify with removeLabelIds: ["UNREAD"], returns
+  {marked_read, message_id, thread_id, label_ids}
+  - mark_as_unread: calls messages.modify with addLabelIds: ["UNREAD"], returns
+  {marked_unread, message_id, thread_id, label_ids}
+
+  Both use the single-message modify endpoint (not batchModify) which is the correct
+   Gmail API call for targeting one message.
+
+  agent.py — mark_as_read and mark_as_unread added to both the import and the TOOLS
+  list. Tool count goes from 16 → 18.
+
+  tests/test_gmail_tools.py — 6 new tests across TestMarkAsRead and
+  TestMarkAsUnread:
+  - Success: return shape and key values correct
+  - API body verification: correct id and body payload sent to modify
+  - Error propagation: side_effect = Exception(...) confirms the exception surfaces
+  (consistent with how all other tools in the file handle errors — none catch them)
+
+✻ Baked for 1m 2s
+
+❯ Update the README to reflect the two bug fixes in server.py and the two new
+  Gmail tools. Keep it concise i hate the fluff
+
+● Read 1 file (ctrl+o to expand)
+
+● The README is very stale — Calendar-only, planned features that shipped long ago,
+  no Gmail mention at all. I'll rewrite it to reflect actual current state including
+   the fixes and new tools.
+
+❯ Tool loaded.
+
+● Write(readme.md)
+  ⎿  Added 40 lines, removed 71 lines
+       1 -TODO: Make a requirements.txt file
+       2 -
+       3 -
+       4 -# Stella 🗓️✨
+       5 -
+       6 -**Stella** is a personal AI agent that manages my Google Calendar
+         -on my behalf.
+       7 -
+       8 -It can understand natural language requests like:
+       9 -> “Create a meeting tomorrow from 1–3pm”
+      10 -and safely turn them into real calendar actions using Google’s
+         -API.
+      11 -
+      12 ----
+      13 -
+      14 -## What it does (so far)
+      15 -
+      16 -- ✅ Create calendar events via natural language
+      17 -- 🔐 OAuth-based Google Calendar authentication
+      18 -- 🧠 Tool-calling agent (no fake “I did it” responses)
+      19 -- 🗂️ Clean separation between agent logic and calendar tools
+      20 -
+      21 ----
+      22 -
+      23 -## Planned features
+      24 -
+      25 -- 🗑️ Delete events
+      26 -- ✏️ Update / reschedule events
+      27 -- 🔍 Find & list events (by day or query)
+      28 -- 🧾 Daily summaries
+      29 -- 🛡️ Safety guardrails for destructive actions
+      30 -
+      31 ----
+      32 -
+      33 -## Tech stack
+      34 -
+      35 -- Python 3.12
+      36 -- LangChain (tool-calling agents)
+      37 -- OpenAI (`gpt-4o-mini`)
+      38 -- Google Calendar API (OAuth2)
+      39 -
+      40 ----
+      41 -
+      42 -## How it works (high level)
+      43 -
+      44 -User → Agent (LLM)
+      45 -↓
+      46 -Tools (create / update / delete)
+      47 -↓
+      48 -Google Calendar API
+      49 -
+      50 -
+      51 -The agent **can only act through explicit tools**, keeping
+         -behavior predictable and safe.
+      52 -
+      53 ----
+      54 -
+      55 -## Setup (minimal)
+      56 -
+      57 -1. Create a Google Cloud project
+      58 -2. Enable Google Calendar API
+      59 -3. Add `credentials.json` to the repo
+      60 -4. Set `OPENAI_API_KEY` in your environment
+      61 -5. Run the agent and authorize once in the browser
+      62 -
+      63 ----
+      64 -
+      65 -## Status
+      66 -
+      67 -🚧 Work in progress — built as a personal automation / agent
+         -playground.
+      68 -
+      69 ----
+      70 -
+      71 -*Built for learning, safety, and control — not as a generic SaaS
+         -bot.*
+       1 +TODO: Make a requirements.txt file
+       2 +
+       3 +# Stella
+       4 +
+       5 +Personal AI agent for Google Calendar and Gmail. Natural language
+         +in, real API calls out.
+       6 +
+       7 +## Tools
+       8 +
+       9 +**Calendar (7):** create, list by day, list by range, find,
+         +delete, update, get current datetime
+      10 +
+      11 +**Gmail (11):** list messages, get message, trash, delete
+         +permanently, batch modify labels, mark as read, mark as unread,
+         +create draft, update draft, send draft, create reply draft
+      12 +
+      13 +## Tech stack
+      14 +
+      15 +- Python 3.12, FastAPI, LangChain, OpenAI `gpt-4o-mini`
+      16 +- Google Calendar + Gmail APIs (unified OAuth2, shared
+         +`token.json`)
+      17 +- Next.js 15 / React 19 frontend with EventCard + EmailCard
+         +components
+      18 +
+      19 +## Setup
+      20 +
+      21 +1. Create a Google Cloud project, enable Calendar and Gmail APIs
+      22 +2. Add `credentials.json` to the repo root
+      23 +3. Set `OPENAI_API_KEY` in your environment
+      24 +4. Run and authorize once in the browser
+      25 +
+      26 +```bash
+      27 +python main.py              # terminal CLI
+      28 +uvicorn server:app --reload # backend
+      29 +cd web && npm run dev       # frontend
+      30 +pytest tests/               # tests
+      31 +```
+      32 +
+      33 +## Status
+      34 +
+      35 +Work in progress — personal automation/agent playground.
+      36 +
+      37 +### Recent changes
+      38 +- Fixed stale event cards bleeding across turns
+         +(`_extract_events_from_messages` now stops at the current turn
+         +boundary, matching email extraction behavior)
+      39 +- Fixed unsafe `messages[-1].content` access in the chat endpoint
+         +— now guarded against non-AIMessage types
+      40 +- Added `mark_as_read` and `mark_as_unread` Gmail tools
+
+● Done. Stripped the emoji marketing copy, moved planned features that already
+  shipped into the tools list, and added a "Recent changes" section at the bottom
+  covering the two fixes and two new tools.
+
+❯ Now fix the silent drop of raw list tool results in _parse_tool_content. It
+  should log a warning and handle lists gracefully instead of returning None.
+
+● Read 1 file (ctrl+o to expand)
+
+● Three changes: add logging, fix _parse_tool_content, update the caller that uses
+  its result.
+
+● Update(server.py)
+  ⎿  Added 3 lines
+       1  # server.py
+       2  import ast
+       3  import json
+       4 +import logging
+       5  from datetime import datetime
+       6 +
+       7 +logger = logging.getLogger(__name__)
+       8  from fastapi.middleware.cors import CORSMiddleware
+       9  from fastapi import FastAPI
+      10  from pydantic import BaseModel
+
+● Update(server.py)
+  ⎿  Added 6 lines, removed 2 lines
+      140      return list(reversed(emails))
+      141
+      142
+      143 -def _parse_tool_content(raw) -> dict | None:
+      144 -    """Parse tool message content (str or dict) to a dict
+          -. Returns None on failure."""
+      143 +def _parse_tool_content(raw) -> dict | list | None:
+      144 +    """Parse tool message content (str, dict, or list) to a
+          +structured value. Returns None on failure."""
+      145      try:
+      146          if isinstance(raw, str):
+      147              try:
+     ...
+      150                  return ast.literal_eval(raw)
+      151          if isinstance(raw, dict):
+      152              return raw
+      153 +        if isinstance(raw, list):
+      154 +            logger.warning("_parse_tool_content: received a raw
+          +list (%d items); returning as-is", len(raw))
+      155 +            return raw
+      156 +        logger.warning("_parse_tool_content: unexpected type %s,
+          +dropping", type(raw).__name__)
+      157          return None
+      158      except (json.JSONDecodeError, TypeError, ValueError,
+           SyntaxError):
+      159          return None
+
+● Now update _extract_events_from_messages — the one caller that does
+  data.get("events") and needs to handle a list result:
+
+● Update(server.py)
+  ⎿  Added 4 lines, removed 1 line
+      172          if name in EVENT_LIST_TOOLS:
+      173              data = _parse_tool_content(content)
+      174              if data is not None:
+      175 -                raw_events = data.get("events")
+          -if isinstance(data, dict) else []
+      175 +                if isinstance(data, list):
+      176 +                    raw_events = data
+      177 +                else:
+      178 +                    raw_events = data.get("events") if
+          +isinstance(data, dict) else []
+      179                  return _tool_events_to_frontend(raw_events)
+      180
+      181          if name in EVENT_SINGLE_TOOLS:
+
+● Three changes:
+
+  1. import logging + logger — standard module-level logger; integrates with
+  whatever logging config FastAPI/uvicorn sets up.
+  2. _parse_tool_content — two new branches instead of falling through to return
+  None:
+    - list: logs a warning with the item count and returns the list instead of
+  dropping it
+    - anything else (e.g. int, bool): logs a warning with the type name and returns
+  None — those are genuinely unhandleable, so None is still correct, but now it's
+  visible
+    - Return type widened to dict | list | None
+  3. _extract_events_from_messages — the EVENT_LIST_TOOLS branch already had a
+  isinstance(data, dict) guard with else [], so it was partially prepared. Now it
+  explicitly checks isinstance(data, list) first and uses the list directly as
+  raw_events, matching what tools would return if they ever skip the {"events":
+  [...]} wrapper.
+
+  The EVENT_SINGLE_TOOLS branch doesn't need updating — data.get(...) calls are
+  already guarded by if not isinstance(data, dict): continue, so a list result there
+   is correctly skipped.
+
+✻ Cooked for 59s
+
+❯ Add a mark_all_as_read tool that uses Gmail's batchModify endpoint to mark
+  all messages matching a label (default INBOX) as read in a single API call.
+  Register it in agent.py and write tests.
+
+● Read 1 file (ctrl+o to expand)
+
+● Good, I have everything I need. All three edits in parallel.
+
+● Update(tools/gmail.py)
+  ⎿  Added 42 lines
+      296
+      297
+      298  @tool(
+      299 +    "mark_all_as_read",
+      300 +    description=(
+      301 +        "Mark all unread messages in a label as read using a
+          +single batchModify call. "
+      302 +        "Defaults to INBOX. Provide label_ids to target a
+          +different label, or query for "
+      303 +        "Gmail search syntax filtering. Processes up to 500
+          +messages (one API page)."
+      304 +    ),
+      305 +)
+      306 +def mark_all_as_read(
+      307 +    label_ids: Optional[List[str]] = None,
+      308 +    query: Optional[str] = None,
+      309 +    max_results: int = 500,
+      310 +    user_id: str = DEFAULT_USER_ID,
+      311 +) -> Dict[str, Any]:
+      312 +    service = get_service()
+      313 +
+      314 +    # Always include UNREAD so we only fetch messages that
+          +actually need changing
+      315 +    effective_labels = list(label_ids or ["INBOX"])
+      316 +    if "UNREAD" not in effective_labels:
+      317 +        effective_labels.append("UNREAD")
+      318 +
+      319 +    resp = (
+      320 +        service.users()
+      321 +        .messages()
+      322 +        .list(userId=user_id, q=query or None,
+          +labelIds=effective_labels, maxResults=max_results)
+      323 +        .execute()
+      324 +    )
+      325 +
+      326 +    msgs = resp.get("messages") or []
+      327 +    if not msgs:
+      328 +        return {"marked_read": True, "count": 0, "message_ids":
+          +[]}
+      329 +
+      330 +    message_ids = [m["id"] for m in msgs]
+      331 +
+      332 +    service.users().messages().batchModify(
+      333 +        userId=user_id,
+      334 +        body={"ids": message_ids, "removeLabelIds": ["UNREAD"]},
+      335 +    ).execute()
+      336 +
+      337 +    return {"marked_read": True, "count": len(message_ids),
+          +"message_ids": message_ids}
+      338 +
+      339 +
+      340 +@tool(
+      341      "create_draft",
+      342      description="Create a Gmail draft. Provide to/subject/body.
+           Returns draft_id and message_id.",
+      343  )
+
+● Update(agent.py)
+  ⎿  Added 1 line
+      24      batch_modify_labels,
+      25      mark_as_read,
+      26      mark_as_unread,
+      27 +    mark_all_as_read,
+      28      create_draft,
+      29      update_draft,
+      30      send_draft,
+
+● Update(agent.py)
+  ⎿  Added 1 line
+      53      batch_modify_labels,
+      54      mark_as_read,
+      55      mark_as_unread,
+      56 +    mark_all_as_read,
+      57      create_draft,
+      58      update_draft,
+      59      send_draft,
+
+● Now the tests:
+
+● Update(tests/test_gmail_tools.py)
+  ⎿  Added 1 line
+      15      delete_message_permanently,
+      16      get_message,
+      17      list_messages,
+      18 +    mark_all_as_read,
+      19      mark_as_read,
+      20      mark_as_unread,
+      21      send_draft,
+
+● Update(tests/test_gmail_tools.py)
+  ⎿  Added 103 lines
+      335
+      336
+      337  # ---------------------------------------------------------------
+           ------------
+      338 +# mark_all_as_read
+      339 +# ---------------------------------------------------------------
+          +------------
+      340 +
+      341 +class TestMarkAllAsRead:
+      342 +    def test_marks_all_unread_and_returns_count(self,
+          +mock_gmail_service):
+      343 +        _msgs_resource(mock_gmail_service).list.return_value.exec
+          +ute.return_value = {
+      344 +            "messages": [{"id": "msg1"}, {"id": "msg2"}, {"id":
+          +"msg3"}]
+      345 +        }
+      346 +        _msgs_resource(mock_gmail_service).batchModify.return_val
+          +ue.execute.return_value = None
+      347 +
+      348 +        result = mark_all_as_read.func()
+      349 +
+      350 +        assert result["marked_read"] is True
+      351 +        assert result["count"] == 3
+      352 +        assert result["message_ids"] == ["msg1", "msg2", "msg3"]
+      353 +
+      354 +    def test_no_unread_messages_skips_batch_modify(self,
+          +mock_gmail_service):
+      355 +        _msgs_resource(mock_gmail_service).list.return_value.exec
+          +ute.return_value = {"messages": []}
+      356 +
+      357 +        result = mark_all_as_read.func()
+      358 +
+      359 +        assert result["marked_read"] is True
+      360 +        assert result["count"] == 0
+      361 +        assert result["message_ids"] == []
+      362 +        _msgs_resource(mock_gmail_service).batchModify.assert_not
+          +_called()
+      363 +
+      364 +    def test_missing_messages_key_treated_as_empty(self,
+          +mock_gmail_service):
+      365 +        _msgs_resource(mock_gmail_service).list.return_value.exec
+          +ute.return_value = {}
+      366 +
+      367 +        result = mark_all_as_read.func()
+      368 +
+      369 +        assert result["count"] == 0
+      370 +        _msgs_resource(mock_gmail_service).batchModify.assert_not
+          +_called()
+      371 +
+      372 +    def test_default_label_includes_inbox_and_unread(self,
+          +mock_gmail_service):
+      373 +        _msgs_resource(mock_gmail_service).list.return_value.exec
+          +ute.return_value = {"messages": []}
+      374 +
+      375 +        mark_all_as_read.func()
+      376 +
+      377 +        list_call =
+          +_msgs_resource(mock_gmail_service).list.call_args
+      378 +        assert "INBOX" in list_call.kwargs["labelIds"]
+      379 +        assert "UNREAD" in list_call.kwargs["labelIds"]
+      380 +
+      381 +    def test_custom_label_forwarded_with_unread_appended(self,
+          +mock_gmail_service):
+      382 +        _msgs_resource(mock_gmail_service).list.return_value.exec
+          +ute.return_value = {"messages": []}
+      383 +
+      384 +        mark_all_as_read.func(label_ids=["STARRED"])
+      385 +
+      386 +        list_call =
+          +_msgs_resource(mock_gmail_service).list.call_args
+      387 +        assert "STARRED" in list_call.kwargs["labelIds"]
+      388 +        assert "UNREAD" in list_call.kwargs["labelIds"]
+      389 +        assert "INBOX" not in list_call.kwargs["labelIds"]
+      390 +
+      391 +    def test_unread_not_duplicated_if_already_in_label_ids(self,
+          +mock_gmail_service):
+      392 +        _msgs_resource(mock_gmail_service).list.return_value.exec
+          +ute.return_value = {"messages": []}
+      393 +
+      394 +        mark_all_as_read.func(label_ids=["INBOX", "UNREAD"])
+      395 +
+      396 +        list_call =
+          +_msgs_resource(mock_gmail_service).list.call_args
+      397 +        assert list_call.kwargs["labelIds"].count("UNREAD") == 1
+      398 +
+      399 +    def test_query_forwarded_to_list(self, mock_gmail_service):
+      400 +        _msgs_resource(mock_gmail_service).list.return_value.exec
+          +ute.return_value = {"messages": []}
+      401 +
+      402 +        mark_all_as_read.func(query="from:boss@example.com")
+      403 +
+      404 +        list_call =
+          +_msgs_resource(mock_gmail_service).list.call_args
+      405 +        assert list_call.kwargs["q"] == "from:boss@example.com"
+      406 +
+      407 +    def test_batch_modify_removes_unread_label(self,
+          +mock_gmail_service):
+      408 +        _msgs_resource(mock_gmail_service).list.return_value.exec
+          +ute.return_value = {
+      409 +            "messages": [{"id": "a"}, {"id": "b"}]
+      410 +        }
+      411 +        _msgs_resource(mock_gmail_service).batchModify.return_val
+          +ue.execute.return_value = None
+      412 +
+      413 +        mark_all_as_read.func()
+      414 +
+      415 +        batch_call =
+          +_msgs_resource(mock_gmail_service).batchModify.call_args
+      416 +        body = batch_call.kwargs["body"]
+      417 +        assert body["ids"] == ["a", "b"]
+      418 +        assert body["removeLabelIds"] == ["UNREAD"]
+      419 +
+      420 +    def test_api_error_on_list_propagates(self,
+          +mock_gmail_service):
+      421 +        _msgs_resource(mock_gmail_service).list.return_value.exec
+          +ute.side_effect = Exception(
+      422 +            "API error"
+      423 +        )
+      424 +
+      425 +        with pytest.raises(Exception, match="API error"):
+      426 +            mark_all_as_read.func()
+      427 +
+      428 +    def test_api_error_on_batch_modify_propagates(self,
+          +mock_gmail_service):
+      429 +        _msgs_resource(mock_gmail_service).list.return_value.exec
+          +ute.return_value = {
+      430 +            "messages": [{"id": "msg1"}]
+      431 +        }
+      432 +        _msgs_resource(mock_gmail_service).batchModify.return_val
+          +ue.execute.side_effect = Exception(
+      433 +            "batch error"
+      434 +        )
+      435 +
+      436 +        with pytest.raises(Exception, match="batch error"):
+      437 +            mark_all_as_read.func()
+      438 +
+      439 +
+      440 +# ---------------------------------------------------------------
+          +------------
+      441  # create_draft
+      442  # ---------------------------------------------------------------
+           ------------
+      443
+
+● Done. Summary:
+
+  tools/gmail.py — mark_all_as_read
+  - Lists messages with labelIds always including UNREAD (so we never batchModify
+  already-read messages)
+  - Early returns count: 0 with no batchModify call if the list is empty
+  - Single batchModify call with removeLabelIds: ["UNREAD"] on all fetched IDs
+  - max_results defaults to 500 — Gmail's per-page maximum, so one list + one
+  batchModify covers up to 500 messages
+
+  agent.py — imported and added to TOOLS (now 19 tools)
+
+  tests/test_gmail_tools.py — 10 tests in TestMarkAllAsRead
+
+  ┌────────────────────────────────────────────────────┬─────────────────────────┐
+  │                        Test                        │     What it covers      │
+  ├────────────────────────────────────────────────────┼─────────────────────────┤
+  │ test_marks_all_unread_and_returns_count            │ Happy path, count and   │
+  │                                                    │ IDs correct             │
+  ├────────────────────────────────────────────────────┼─────────────────────────┤
+  │                                                    │ Empty list →            │
+  │ test_no_unread_messages_skips_batch_modify         │ batchModify never       │
+  │                                                    │ called                  │
+  ├────────────────────────────────────────────────────┼─────────────────────────┤
+  │ test_missing_messages_key_treated_as_empty         │ API returns {} → same   │
+  │                                                    │ as empty                │
+  ├────────────────────────────────────────────────────┼─────────────────────────┤
+  │ test_default_label_includes_inbox_and_unread       │ Default label filter is │
+  │                                                    │  [INBOX, UNREAD]        │
+  ├────────────────────────────────────────────────────┼─────────────────────────┤
+  │ test_custom_label_forwarded_with_unread_appended   │ Custom label keeps      │
+  │                                                    │ INBOX out, adds UNREAD  │
+  ├────────────────────────────────────────────────────┼─────────────────────────┤
+  │ test_unread_not_duplicated_if_already_in_label_ids │ No duplicate UNREAD if  │
+  │                                                    │ caller passes it        │
+  ├────────────────────────────────────────────────────┼─────────────────────────┤
+  │ test_query_forwarded_to_list                       │ query param reaches the │
+  │                                                    │  list call              │
+  ├────────────────────────────────────────────────────┼─────────────────────────┤
+  │                                                    │ batchModify body has    │
+  │ test_batch_modify_removes_unread_label             │ correct ids and         │
+  │                                                    │ removeLabelIds          │
+  ├────────────────────────────────────────────────────┼─────────────────────────┤
+  │ test_api_error_on_list_propagates                  │ list failure surfaces   │
+  ├────────────────────────────────────────────────────┼─────────────────────────┤
+  │ test_api_error_on_batch_modify_propagates          │ batchModify failure     │
+  │                                                    │ surfaces                │
+  └────────────────────────────────────────────────────┴─────────────────────────┘
+
+✻ Sautéed for 1m 18s
+
+❯ let's go. run the full test suite and show me the output.
+
+❯ Tool loaded.
+
+● Bash(python -m pytest tests/ -v 2>&1)
+  ⎿  Error: Exit code 127
+     /bin/bash: line 1: python: command not found
+
+     /bin/bash: line 1: python: command not found
+
+● Bash(python3 -m pytest tests/ -v 2>&1)
+  ⎿  Error: Exit code 1
+     /usr/bin/python3: No module named pytest
+
+     /usr/bin/python3: No module named pytest
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+❯ The Python environment is managed with pip on Windows. In this WSL
+  environment, install the test dependencies with: pip3 install pytest
+  pytest-mock --break-system-packages, then run the tests.
+
+● Bash(pip3 install pytest pytest-mock --break-system-packages 2>&1)
+  ⎿  Defaulting to user installation because normal site-packages is not writea
+     ble
+     Collecting pytest
+     … +18 lines (ctrl+o to expand)
+
+● Bash(pip3 install -r requirements.txt --break-system-packages 2>&1 || true &&
+      /home/michel/.local/bin/pytest tests/ -v 2>&1)
+  ⎿  Error: Exit code 2
+     Defaulting to user installation because normal site-packages is not writeable
+     ERROR: Could not open requirements file: [Errno 2] No such file or directory:
+     'requirements.txt'
+     ============================= test session starts
+     ==============================
+     platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0 -- /usr/bin/python3
+     cachedir: .pytest_cache
+     rootdir: /mnt/c/Users/Michel/OneDrive/Projects/agents/Stella
+     plugins: mock-3.15.1
+     collecting ... collected 0 items / 3 errors
+
+     … +92 lines (ctrl+o to see all)
+
+● No requirements.txt yet (it's a TODO in the README), so the project deps are
+  missing. Let me install what's needed and run again.
+
+● Bash(pip3 install langchain langchain-core langchain-openai langchain-community
+      fastapi httpx google-api-python-client google-auth google-auth-oauthlib
+      python-dotenv…)
+  ⎿  Defaulting to user installation because normal site-packages is not writea
+     ble
+     Collecting langchain
+     … +329 lines (ctrl+o to expand)
+  ⎿  (timeout 3m)
+
+● Bash(/home/michel/.local/bin/pytest tests/ -v 2>&1)
+  ⎿  ============================= test session starts ========================
+     ======
+     platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0 -- /usr/bin/py
+     … +136 lines (ctrl+o to expand)
+
+● 103/103 passed.
+
+✻ Crunched for 1m 3s
+
+❯ awesome thanks see you later
+
+● See you!
+
+❯ /exit
+  ⎿  See ya!
+
+────────────────────────────────────────────────────────────────────────────── ▪▪▪ ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle)
+
+Resume this session with:
+claude --resume 49c602c4-546d-4243-98af-bd70ddbfa8ea

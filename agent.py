@@ -22,6 +22,9 @@ from tools.gmail import (
     trash_message,
     delete_message_permanently,
     batch_modify_labels,
+    mark_as_read,
+    mark_as_unread,
+    mark_all_as_read,
     create_draft,
     update_draft,
     send_draft,
@@ -29,6 +32,8 @@ from tools.gmail import (
 )
 
 model = init_chat_model("gpt-4o-mini", temperature=0)
+
+
 
 TOOLS = [
     # Calendar
@@ -46,6 +51,9 @@ TOOLS = [
     trash_message,
     delete_message_permanently,
     batch_modify_labels,
+    mark_as_read,
+    mark_as_unread,
+    mark_all_as_read,
     create_draft,
     update_draft,
     send_draft,
